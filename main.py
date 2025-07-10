@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import pytesseract
 import io
 import requests
@@ -8,6 +8,7 @@ from langdetect import detect_langs
 import time
 import cv2
 import numpy as np
+import json
 
 app = FastAPI()
 
@@ -210,12 +211,32 @@ async def extract_text_link(
     image_url: str = Form(...),
     preprocess: str = Form(None),
     ocr_lang: str = Form('eng'),
-    deskew: bool = Form(False)
+    deskew: bool = Form(False),
+    headers: str = Form(None, description="Optional JSON string of headers for image download.")
 ):
     start_time = time.time()
-    response = requests.get(image_url)
-    image = Image.open(io.BytesIO(response.content))
-    text, main_box, blocks, detected_languages = process_image(image, preprocess, ocr_lang, deskew)
+    # Parse custom headers if provided
+    custom_headers = {}
+    if headers:
+        try:
+            custom_headers = json.loads(headers)
+        except Exception:
+            return JSONResponse(content={"status": False, "error": "Invalid headers JSON."}, status_code=400)
+    try:
+        response = requests.get(image_url, headers=custom_headers, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        return JSONResponse(content={"status": False, "error": f"Failed to download image: {str(e)}"}, status_code=400)
+    try:
+        image = Image.open(io.BytesIO(response.content))
+    except UnidentifiedImageError:
+        return JSONResponse(content={"status": False, "error": "Downloaded file is not a valid or supported image type."}, status_code=400)
+    except Exception as e:
+        return JSONResponse(content={"status": False, "error": f"Failed to open image: {str(e)}"}, status_code=400)
+    try:
+        text, main_box, blocks, detected_languages = process_image(image, preprocess, ocr_lang, deskew)
+    except Exception as e:
+        return JSONResponse(content={"status": False, "error": f"Failed to process image: {str(e)}"}, status_code=500)
     execution_time = int((time.time() - start_time) * 1000)
     return JSONResponse(content={
         "status": True,
