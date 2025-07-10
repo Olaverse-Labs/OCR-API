@@ -12,7 +12,6 @@ import numpy as np
 app = FastAPI()
 
 def deskew_image(pil_img):
-    # Convert to OpenCV format
     img = np.array(pil_img.convert('L'))
     coords = np.column_stack(np.where(img > 0))
     angle = 0
@@ -29,30 +28,9 @@ def deskew_image(pil_img):
         img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return Image.fromarray(img)
 
-@app.post("/extract-text/")
-async def extract_text(
-    file: UploadFile = File(None),
-    image_url: str = Form(None),
-    preprocess: str = Form(None, description="Preprocessing: grayscale, threshold, denoise, or comma-separated list"),
-    ocr_lang: str = Form('eng', description="Tesseract language(s), e.g. 'eng', 'fra', 'eng+fra'"),
-    deskew: bool = Form(False, description="Deskew image before OCR")
-):
-    start_time = time.time()
-    # Load image from file or URL
-    if file:
-        image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-    elif image_url:
-        response = requests.get(image_url)
-        image = Image.open(io.BytesIO(response.content))
-    else:
-        return JSONResponse(content={"status": False, "error": "No image provided."}, status_code=400)
-
-    # Deskew if requested
+def process_image(image, preprocess, ocr_lang, deskew):
     if deskew:
         image = deskew_image(image)
-
-    # Preprocessing
     if preprocess:
         img_cv = np.array(image)
         if 'grayscale' in preprocess:
@@ -64,14 +42,10 @@ async def extract_text(
         if 'denoise' in preprocess:
             img_cv = cv2.fastNlMeansDenoising(img_cv, None, 30, 7, 21)
         image = Image.fromarray(img_cv)
-
-    # OCR with bounding boxes, confidence, and structure
     custom_config = f'-l {ocr_lang} --oem 3 --psm 3'
     data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config=custom_config)
     n_boxes = len(data['level'])
     width, height = image.size
-
-    # Group words into lines, paragraphs, blocks
     blocks = {}
     for i in range(n_boxes):
         block_num = data['block_num'][i]
@@ -79,15 +53,12 @@ async def extract_text(
         line_num = data['line_num'][i]
         word_text = data['text'][i].strip()
         conf = float(data['conf'][i]) if data['conf'][i] != '-1' else None
-        # Block
         if block_num not in blocks:
             blocks[block_num] = {'box': [], 'paragraphs': {}, 'text': '', 'boxes': []}
         block = blocks[block_num]
-        # Paragraph
         if par_num not in block['paragraphs']:
             block['paragraphs'][par_num] = {'box': [], 'lines': {}, 'text': '', 'boxes': []}
         paragraph = block['paragraphs'][par_num]
-        # Line
         if line_num not in paragraph['lines']:
             paragraph['lines'][line_num] = {'box': [], 'words': [], 'text': '', 'boxes': []}
         line = paragraph['lines'][line_num]
@@ -111,7 +82,6 @@ async def extract_text(
                 data['left'][i] + data['width'][i],
                 data['top'][i] + data['height'][i]
             ])
-        # For line/paragraph/block boxes
         if word_text:
             paragraph['boxes'].append([
                 data['left'][i],
@@ -125,12 +95,10 @@ async def extract_text(
                 data['left'][i] + data['width'][i],
                 data['top'][i] + data['height'][i]
             ])
-    # Format output
     output_blocks = []
     all_boxes = []
     for block_num, block in blocks.items():
         block_paragraphs = []
-        # Block box
         if block['boxes']:
             lefts = [b[0] for b in block['boxes']]
             tops = [b[1] for b in block['boxes']]
@@ -149,7 +117,6 @@ async def extract_text(
             block_box = [0, 0, 0, 0]
         for par_num, paragraph in block['paragraphs'].items():
             paragraph_lines = []
-            # Paragraph box
             if paragraph['boxes']:
                 lefts = [b[0] for b in paragraph['boxes']]
                 tops = [b[1] for b in paragraph['boxes']]
@@ -164,7 +131,6 @@ async def extract_text(
             else:
                 par_box = [0, 0, 0, 0]
             for line_num, line in paragraph['lines'].items():
-                # Line box
                 if line['boxes']:
                     lefts = [b[0] for b in line['boxes']]
                     tops = [b[1] for b in line['boxes']]
@@ -191,7 +157,6 @@ async def extract_text(
             'paragraphs': block_paragraphs,
             'boxCoordinates': block_box
         })
-    # Find the largest box (by area) for the whole text
     if all_boxes:
         lefts = [b[0] for b in all_boxes]
         tops = [b[1] for b in all_boxes]
@@ -205,7 +170,6 @@ async def extract_text(
         ]
     else:
         main_box = [0, 0, 0, 0]
-    # Full text for language detection
     full_text = ' '.join([line['text'] for block in output_blocks for par in block['paragraphs'] for line in par['lines']]).strip()
     detected_languages = []
     if full_text:
@@ -218,12 +182,46 @@ async def extract_text(
                 })
         except Exception:
             pass
+    return full_text, main_box, output_blocks, detected_languages
+
+@app.post("/extract-text-file/")
+async def extract_text_file(
+    file: UploadFile = File(...),
+    preprocess: str = Form(None),
+    ocr_lang: str = Form('eng'),
+    deskew: bool = Form(False)
+):
+    start_time = time.time()
+    image_bytes = await file.read()
+    image = Image.open(io.BytesIO(image_bytes))
+    text, main_box, blocks, detected_languages = process_image(image, preprocess, ocr_lang, deskew)
     execution_time = int((time.time() - start_time) * 1000)
     return JSONResponse(content={
         "status": True,
-        "text": full_text,
+        "text": text,
         "boxCoordinates": main_box,
-        "blocks": output_blocks,
+        "blocks": blocks,
         "detectedLanguages": detected_languages,
         "executionTimeMS": execution_time
-    }) 
+    })
+
+@app.post("/extract-text-link/")
+async def extract_text_link(
+    image_url: str = Form(...),
+    preprocess: str = Form(None),
+    ocr_lang: str = Form('eng'),
+    deskew: bool = Form(False)
+):
+    start_time = time.time()
+    response = requests.get(image_url)
+    image = Image.open(io.BytesIO(response.content))
+    text, main_box, blocks, detected_languages = process_image(image, preprocess, ocr_lang, deskew)
+    execution_time = int((time.time() - start_time) * 1000)
+    return JSONResponse(content={
+        "status": True,
+        "text": text,
+        "boxCoordinates": main_box,
+        "blocks": blocks,
+        "detectedLanguages": detected_languages,
+        "executionTimeMS": execution_time
+    })
