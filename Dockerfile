@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
-# Install Tesseract OCR and dependencies
-RUN apt-get update && apt-get install -y tesseract-ocr libtesseract-dev && rm -rf /var/lib/apt/lists/*
+# Install Tesseract OCR, OpenCV dependencies, and others
+RUN apt-get update && apt-get install -y tesseract-ocr libtesseract-dev libgl1 && rm -rf /var/lib/apt/lists/*
 
 # Set work directory
 WORKDIR /app
