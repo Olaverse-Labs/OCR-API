@@ -1,5 +1,7 @@
 # Image to Text OCR API
 
+[![Olaverse API](https://img.shields.io/badge/Olaverse-API%20Doc-blue?style=flat-square)](https://www.olaverse.co.uk/ocr-api) [![Try on Vibeland](https://img.shields.io/badge/Vibeland-Try%20Live-orange?style=flat-square)](https://www.vibeland.co.uk/tools/ocr)
+
 A FastAPI-based OCR service that extracts text and structure from images, supporting advanced features like preprocessing, language selection, confidence scores, and more.
 
 ## Features
